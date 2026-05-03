@@ -67,6 +67,7 @@
           fontFamily: document.querySelector('input[name="font"]'),
           fontWeight: document.querySelector('input[name="font-weight"]'),
           fontStyle: document.querySelector('input[name="font-style"]'),
+          allowStretch: document.querySelector('input[name="allow-stretch"]'),
           fill: document.querySelector('input[name="fill"]'),
           fillAlpha: document.querySelector('input[name="fill-alpha"]'),
           stroke: document.querySelector('input[name="stroke"]'),
@@ -89,9 +90,7 @@
           return { context, width, height };
         };
 
-        const canvases = Array.from(document.querySelectorAll("canvas")).map(
-          setupCanvas,
-        );
+        const canvases = Array.from(document.querySelectorAll("canvas")).map(setupCanvas);
         const main = canvases[0];
 
         const getLineInkMetrics = (context, line) => {
@@ -127,42 +126,41 @@
           const inkH = maxAscent + maxDescent;
           const lineGap = Math.max(1, inkH / 16);
           const lineStep = inkH + lineGap;
-          const blockH =
-            lines.length === 0
-              ? 0
-              : inkH + Math.max(0, lines.length - 1) * lineStep;
+          const blockH = lines.length === 0 ? 0 : inkH + Math.max(0, lines.length - 1) * lineStep;
 
           return { maxInkW, maxAscent, lineStep, blockH };
         };
 
-        const fitFontSize = (lines, buildFont) => {
+        const fitFontSize = (lines, font) => {
           let lo = minFontSize;
           let hi = main.height * maxFontSizeFactor;
 
-          while (1 < hi - lo) {
-            const mid = ((lo + hi) / 2) | 0;
-            const block = measureBlock(main.context, lines, buildFont, mid);
-            if (block.maxInkW <= main.width && block.blockH <= main.height) {
-              lo = mid;
-            } else {
-              hi = mid;
-            }
+          for (let i = 0; i < 24; i++) {
+            const mid = (lo + hi) / 2;
+            const block = measureBlock(main.context, lines, font, mid);
+            if (block.maxInkW <= main.width && block.blockH <= main.height) lo = mid;
+            else hi = mid;
           }
 
           return lo;
         };
 
-        const drawLines = (target, lines, firstBaselineY, lineStep, style) => {
+        const drawLines = (target, lines, firstBaselineY, lineStep, style, stretch) => {
+          const lineMetrics = lines.map((line) => getLineInkMetrics(target.context, line));
+
           target.context.textBaseline = "alphabetic";
           target.context.textAlign = "left";
           target.context.save();
+          target.context.translate(target.width / 2, target.height / 2);
+          target.context.scale(stretch.x, stretch.y);
+          target.context.translate(-target.width / 2, -target.height / 2);
           target.context.lineWidth = style.strokeWidth;
           target.context.lineJoin = "round";
           target.context.strokeStyle = style.strokeColor;
           target.context.fillStyle = style.fillColor;
 
           lines.forEach((line, i) => {
-            const metrics = getLineInkMetrics(target.context, line);
+            const metrics = lineMetrics[i];
             const x = (target.width - metrics.width) / 2 + metrics.left;
             const y = firstBaselineY + i * lineStep;
             if (0 < style.strokeWidth && 0 < style.strokeAlpha) {
@@ -176,7 +174,7 @@
           target.context.restore();
         };
 
-        const renderAll = (lines, font, firstBaselineY, lineStep, style) => {
+        const renderAll = (lines, font, firstBaselineY, lineStep, style, stretch) => {
           for (const canvas of canvases) {
             canvas.context.save();
             canvas.context.fillStyle = style.backColor;
@@ -185,7 +183,7 @@
             canvas.context.restore();
 
             canvas.context.font = font;
-            drawLines(canvas, lines, firstBaselineY, lineStep, style);
+            drawLines(canvas, lines, firstBaselineY, lineStep, style, stretch);
           }
         };
 
@@ -200,8 +198,15 @@
 
           const sizePx = fitFontSize(lines, buildFont);
           const block = measureBlock(main.context, lines, buildFont, sizePx);
-          const firstBaselineY =
-            (main.height - block.blockH) / 2 + block.maxAscent;
+          const firstBaselineY = (main.height - block.blockH) / 2 + block.maxAscent;
+          const widthRatio = 0 < block.maxInkW ? main.width / block.maxInkW : 1;
+          const heightRatio = 0 < block.blockH ? main.height / block.blockH : 1;
+          const stretch = inputs.allowStretch.checked
+            ? {
+                x: heightRatio < widthRatio ? widthRatio / heightRatio : 1,
+                y: widthRatio <= heightRatio ? heightRatio / widthRatio : 1,
+              }
+            : { x: 1, y: 1 };
 
           const style = {
             fillColor: inputs.fill.value,
@@ -213,15 +218,9 @@
             backAlpha: Number(inputs.backAlpha.value),
           };
 
-          renderAll(
-            lines,
-            buildFont(sizePx),
-            firstBaselineY,
-            block.lineStep,
-            style,
-          );
+          renderAll(lines, buildFont(sizePx), firstBaselineY, block.lineStep, style, stretch);
 
-          console.log(main.context.canvas.toDataURL("image/png"));
+          //console.log(main.context.canvas.toDataURL("image/png"));
         };
 
         for (const element of document.querySelectorAll("textarea, input"))
@@ -233,6 +232,7 @@
           a.download = (textarea.value || "canvas") + ".png";
           a.href = main.context.canvas.toDataURL("image/png");
           a.click();
+          a.remove();
         });
       });
     </script>
@@ -244,17 +244,16 @@ emoji
     >
     <div class="controls">
       <label>font family</label>
-      <input
-        name="font"
-        type="text"
-        value="Noto Sans, Noto Sans JP, sans-serif"
-      />
+      <input name="font" type="text" value="Noto Sans, Noto Sans JP, sans-serif" />
 
       <label>font weight</label>
       <input name="font-weight" type="text" value="bold" />
 
       <label>font style</label>
       <input name="font-style" type="text" value="normal" />
+
+      <label>stretch</label>
+      <input name="allow-stretch" type="checkbox" />
 
       <label>stroke width</label>
       <input name="stroke-width" type="number" value="0" min="0" />
@@ -263,63 +262,27 @@ emoji
       <input name="stroke" type="color" value="black" />
 
       <label>stroke alpha</label>
-      <input
-        name="stroke-alpha"
-        type="number"
-        value="1"
-        step="0.0625"
-        min="0"
-        max="1"
-      />
+      <input name="stroke-alpha" type="number" value="1" step="0.0625" min="0" max="1" />
 
       <label>fill color</label>
       <input name="fill" type="color" value="gray" />
 
       <label>fill alpha</label>
-      <input
-        name="fill-alpha"
-        type="number"
-        value="1"
-        step="0.0625"
-        min="0"
-        max="1"
-      />
+      <input name="fill-alpha" type="number" value="1" step="0.0625" min="0" max="1" />
 
       <label>background color</label>
       <input name="back" type="color" value="red" />
 
       <label>background alpha</label>
-      <input
-        name="back-alpha"
-        type="number"
-        value="0"
-        step="0.0625"
-        min="0"
-        max="1"
-      />
+      <input name="back-alpha" type="number" value="0" step="0.0625" min="0" max="1" />
       <button>save</button>
     </div>
 
     <div class="canvases">
       <canvas id="main" width="128" height="128"></canvas>
-      <canvas
-        id="ash"
-        width="128"
-        height="128"
-        style="background-color: rgb(50, 51, 56)"
-      ></canvas>
-      <canvas
-        id="dark"
-        width="128"
-        height="128"
-        style="background-color: rgb(29, 29, 33)"
-      ></canvas>
-      <canvas
-        id="onyx"
-        width="128"
-        height="128"
-        style="background-color: black"
-      ></canvas>
+      <canvas id="ash" width="128" height="128" style="background-color: rgb(50, 51, 56)"></canvas>
+      <canvas id="dark" width="128" height="128" style="background-color: rgb(29, 29, 33)"></canvas>
+      <canvas id="onyx" width="128" height="128" style="background-color: black"></canvas>
     </div>
   </body>
 </html>
